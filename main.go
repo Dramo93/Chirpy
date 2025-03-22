@@ -28,7 +28,8 @@ func main (){
 	fileSystem := http.Dir(".")
 	fileserver := http.FileServer(fileSystem)
 
-	mux.Handle("/", fileserver)
+	mux.Handle("/app/", http.StripPrefix("/app",fileserver))
+	mux.HandleFunc("/healthz", serverStatus)
 
 	
 	
@@ -44,4 +45,10 @@ func main (){
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func serverStatus(res http.ResponseWriter, req *http.Request){
+	res.Header().Set("Content-type", "text/plain; charset=utf-8")
+	res.WriteHeader(http.StatusOK)
+	res.Write([]byte("OK"))
 }
