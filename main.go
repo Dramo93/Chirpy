@@ -8,7 +8,16 @@ import (
 
 func main (){
 
+
 	mux := http.NewServeMux()
+
+	fileSystem := http.Dir(".")
+	fileserver := http.FileServer(fileSystem)
+
+	mux.Handle("/", fileserver)
+
+	
+	
 
 	server := http.Server{
 		Handler : mux,
