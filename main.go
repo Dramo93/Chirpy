@@ -4,7 +4,13 @@ import (
 
 	"log"
 	"net/http"
+	"fmt"
+	"sync/atomic"
 )
+
+type apiConfig struct {
+	fileserverHits atomic.Int32
+}
 
 func main (){
 
@@ -28,8 +34,14 @@ func main (){
 	fileSystem := http.Dir(".")
 	fileserver := http.FileServer(fileSystem)
 
-	mux.Handle("/app/", http.StripPrefix("/app",fileserver))
+	apiCfg := apiConfig{}
+
+	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app",fileserver)))
 	mux.HandleFunc("/healthz", serverStatus)
+	mux.HandleFunc("/metrics", apiCfg.serverCount)
+	mux.HandleFunc("/reset", func(res http.ResponseWriter, req *http.Request) {
+		apiCfg.resetServerCount(res, req)
+	})
 
 	
 	
@@ -51,4 +63,23 @@ func serverStatus(res http.ResponseWriter, req *http.Request){
 	res.Header().Set("Content-type", "text/plain; charset=utf-8")
 	res.WriteHeader(http.StatusOK)
 	res.Write([]byte("OK"))
+}
+
+func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(res http.ResponseWriter, req *http.Request) {
+        cfg.fileserverHits.Add(1) // Safely increment the counter
+        next.ServeHTTP(res, req)  // Pass control to the next handler
+    })
+}
+
+func (cfg *apiConfig) resetServerCount(res http.ResponseWriter, req *http.Request) {
+	cfg.fileserverHits.Store(0)
+	res.WriteHeader(http.StatusOK)
+}
+
+func (cfg *apiConfig) serverCount(res http.ResponseWriter, req *http.Request){
+	res.Header().Set("Content-type", "text/plain; charset=utf-8")
+	res.WriteHeader(http.StatusOK)
+	msg := fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
+	res.Write([]byte(msg))
 }
