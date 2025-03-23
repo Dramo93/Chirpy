@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"fmt"
 	"sync/atomic"
+	"encoding/json"	
+	"strings"
 )
 
 type apiConfig struct {
@@ -42,6 +44,7 @@ func main (){
 	mux.HandleFunc("POST /admin/reset", func(res http.ResponseWriter, req *http.Request) {
 		apiCfg.resetServerCount(res, req)
 	})
+	mux.HandleFunc("POST /api/validate_chirp", chirpsValidator)
 
 	
 	
@@ -87,4 +90,73 @@ func (cfg *apiConfig) serverCount(res http.ResponseWriter, req *http.Request){
 		</body>
 		</html>`, cfg.fileserverHits.Load())
 	res.Write([]byte(msg))
+}
+
+func chirpsValidator (res http.ResponseWriter, req *http.Request){
+	type parameters struct {
+		Body string `json:"body"`
+	}
+	type returnVals struct{
+		Clean string `json:"cleaned_body"`
+	}
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+	if err != nil {
+		err := "Something went wrong"
+
+		responseBody := returnError{
+			Error : err,
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(500)
+		res.Write(data)
+		return
+	}
+
+	if len(params.Body) > 140 {
+		err := "Chirp is too long"
+
+		responseBody := returnError{
+			Error : err,
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(400)
+		res.Write(data)
+		return
+	}
+
+	clearingString := params.Body
+	clearingString = strings.Replace(clearingString," kerfuffle " , " **** ", -1)
+	clearingString = strings.Replace(clearingString," Kerfuffle " , " **** ", -1)
+	clearingString = strings.Replace(clearingString," sharbert " , " **** ", -1)
+	clearingString = strings.Replace(clearingString, "Sharbert ", " **** ", -1)
+	clearingString = strings.Replace(clearingString, " fornax ", " **** ", -1)
+	clearingString = strings.Replace(clearingString, " Fornax ", " **** ", -1)
+
+
+	responseBody := returnVals{
+		Clean: clearingString,
+	}
+	data, err := json.Marshal(responseBody)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
+	res.Write(data)
+
 }
