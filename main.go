@@ -37,9 +37,9 @@ func main (){
 	apiCfg := apiConfig{}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app",fileserver)))
-	mux.HandleFunc("/healthz", serverStatus)
-	mux.HandleFunc("/metrics", apiCfg.serverCount)
-	mux.HandleFunc("/reset", func(res http.ResponseWriter, req *http.Request) {
+	mux.HandleFunc("GET /api/healthz", serverStatus)
+	mux.HandleFunc("GET /admin/metrics", apiCfg.serverCount)
+	mux.HandleFunc("POST /admin/reset", func(res http.ResponseWriter, req *http.Request) {
 		apiCfg.resetServerCount(res, req)
 	})
 
@@ -78,8 +78,13 @@ func (cfg *apiConfig) resetServerCount(res http.ResponseWriter, req *http.Reques
 }
 
 func (cfg *apiConfig) serverCount(res http.ResponseWriter, req *http.Request){
-	res.Header().Set("Content-type", "text/plain; charset=utf-8")
+	res.Header().Set("Content-type", "text/html")
 	res.WriteHeader(http.StatusOK)
-	msg := fmt.Sprintf("Hits: %v", cfg.fileserverHits.Load())
+	msg := fmt.Sprintf(`<html>
+		<body>
+			<h1>Welcome, Chirpy Admin</h1>
+			<p>Chirpy has been visited %d times!</p>
+		</body>
+		</html>`, cfg.fileserverHits.Load())
 	res.Write([]byte(msg))
 }
