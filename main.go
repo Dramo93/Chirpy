@@ -1,5 +1,5 @@
 package main
-
+import _ "github.com/lib/pq"
 import (
 
 	"log"
@@ -8,14 +8,37 @@ import (
 	"sync/atomic"
 	"encoding/json"	
 	"strings"
+	"os"
+	"database/sql"
+	"github.com/joho/godotenv"
+	"Chirpy/internal/database"
+	"github.com/google/uuid"
+	"time"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	queries  *database.Queries
+	
+}
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
 }
 
 func main (){
 
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+
+	db, erru := sql.Open("postgres", dbURL)
+	if erru != nil {
+		log.Fatal(erru)
+	} 
+	dbQueries := database.New(db)
 
 	mux := http.NewServeMux()
 
@@ -36,7 +59,9 @@ func main (){
 	fileSystem := http.Dir(".")
 	fileserver := http.FileServer(fileSystem)
 
-	apiCfg := apiConfig{}
+	apiCfg := apiConfig{
+		queries : dbQueries,
+	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app",fileserver)))
 	mux.HandleFunc("GET /api/healthz", serverStatus)
@@ -45,6 +70,7 @@ func main (){
 		apiCfg.resetServerCount(res, req)
 	})
 	mux.HandleFunc("POST /api/validate_chirp", chirpsValidator)
+	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
 
 	
 	
@@ -55,7 +81,7 @@ func main (){
 	}
 
 	log.Println("Starting server on :8080")
-	err:= server.ListenAndServe()
+	err := server.ListenAndServe()
 
 	if err != nil {
 		log.Fatal(err)
@@ -76,7 +102,17 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 func (cfg *apiConfig) resetServerCount(res http.ResponseWriter, req *http.Request) {
-	cfg.fileserverHits.Store(0)
+	plat := os.Getenv("PLATFORM")
+	if plat != "dev" {
+		log.Printf("non autorizzato %v", plat)
+		res.WriteHeader(403)
+		return
+	}
+
+	err := cfg.queries.DeleteUsers(req.Context())
+	if err != nil {
+		log.Printf("errore in cancellazione::: %v", err)
+	}
 	res.WriteHeader(http.StatusOK)
 }
 
@@ -159,4 +195,57 @@ func chirpsValidator (res http.ResponseWriter, req *http.Request){
 	res.WriteHeader(200)
 	res.Write(data)
 
+}
+
+func (cfg *apiConfig) userCreator (res http.ResponseWriter, req *http.Request){
+	type parameters struct {
+		Email string `json:"email"`
+	}
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+
+	//gestione errore
+	if err != nil {
+		err := "Something went wrong"
+
+		responseBody := returnError{
+			Error : err,
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(500)
+		res.Write(data)
+		return
+	}
+
+	var user database.User
+	//crea l'utenza
+	user, err = cfg.queries.CreateUser(req.Context(), params.Email)
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+	}
+	log.Printf("email ricevuta::: %v", params.Email)
+	log.Printf("utenza creata::: %v", user)
+	outputUser := User{
+		ID : user.ID,
+		CreatedAt : user.CreatedAt,
+		UpdatedAt : user.UpdatedAt,
+		Email : user.Email,
+	}
+
+	data, err := json.Marshal(outputUser)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(201)
+	res.Write(data)
 }
