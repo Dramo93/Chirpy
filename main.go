@@ -29,6 +29,14 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body     string    `json:"body"`
+	User_id     uuid.UUID    `json:"user_id"`
+}
+
 func main (){
 
 	godotenv.Load()
@@ -69,7 +77,8 @@ func main (){
 	mux.HandleFunc("POST /admin/reset", func(res http.ResponseWriter, req *http.Request) {
 		apiCfg.resetServerCount(res, req)
 	})
-	mux.HandleFunc("POST /api/validate_chirp", chirpsValidator)
+	mux.HandleFunc("GET /api/chirps", apiCfg.chirpsQueryAll)
+	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsCreator)
 	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
 
 	
@@ -128,9 +137,43 @@ func (cfg *apiConfig) serverCount(res http.ResponseWriter, req *http.Request){
 	res.Write([]byte(msg))
 }
 
-func chirpsValidator (res http.ResponseWriter, req *http.Request){
+func(cfg *apiConfig) chirpsQueryAll(res http.ResponseWriter, req *http.Request){
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	var chirps []database.Chirp
+	var outChirps []Chirp
+	//crea il chirp
+	chirps, err  := cfg.queries.QueryAllChirps(req.Context())
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+	}
+	log.Printf("chirps trovati::: %v", chirps)
+	for _, c := range chirps {
+		outputChirp := Chirp{
+			ID : c.ID,
+			CreatedAt : c.CreatedAt,
+			UpdatedAt : c.UpdatedAt,
+			Body : c.Body,
+			User_id : c.UserID,
+		}
+		outChirps = append(outChirps, outputChirp)
+	}
+
+
+	data, err := json.Marshal(outChirps)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
+	res.Write(data)
+
+}
+
+func (cfg *apiConfig) chirpsCreator (res http.ResponseWriter, req *http.Request){
 	type parameters struct {
 		Body string `json:"body"`
+		User_id uuid.UUID `json:"user_id"`
 	}
 	type returnVals struct{
 		Clean string `json:"cleaned_body"`
@@ -186,13 +229,29 @@ func chirpsValidator (res http.ResponseWriter, req *http.Request){
 	clearingString = strings.Replace(clearingString, " fornax ", " **** ", -1)
 	clearingString = strings.Replace(clearingString, " Fornax ", " **** ", -1)
 
-
-	responseBody := returnVals{
-		Clean: clearingString,
+	clearedParameters := database.CreateChirpParams{
+		Body : clearingString,
+		UserID : params.User_id,
 	}
-	data, err := json.Marshal(responseBody)
+	var chirp database.Chirp
+	//crea il chirp
+	chirp, err = cfg.queries.CreateChirp(req.Context(), clearedParameters)
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+	}
+	log.Printf("body ricevuto::: %v", params.Body)
+	log.Printf("chirp creato::: %v", chirp)
+	outputChirp := Chirp{
+		ID : chirp.ID,
+		CreatedAt : chirp.CreatedAt,
+		UpdatedAt : chirp.UpdatedAt,
+		Body : chirp.Body,
+		User_id : chirp.UserID,
+	}
+
+	data, err := json.Marshal(outputChirp)
 	res.Header().Set("Content-Type", "application/json")
-	res.WriteHeader(200)
+	res.WriteHeader(201)
 	res.Write(data)
 
 }
