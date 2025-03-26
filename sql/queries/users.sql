@@ -23,5 +23,9 @@ RETURNING *;
 SELECT * FROM chirps
 ORDER BY created_at ASC;
 
+-- name: QueryChirp :many
+SELECT * FROM chirps
+WHERE id = $1;
+
 -- name: DeleteUsers :exec
 DELETE FROM users;

@@ -78,6 +78,7 @@ func main (){
 		apiCfg.resetServerCount(res, req)
 	})
 	mux.HandleFunc("GET /api/chirps", apiCfg.chirpsQueryAll)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.chirpsQuery)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsCreator)
 	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
 
@@ -164,6 +165,39 @@ func(cfg *apiConfig) chirpsQueryAll(res http.ResponseWriter, req *http.Request){
 
 
 	data, err := json.Marshal(outChirps)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
+	res.Write(data)
+
+}
+func(cfg *apiConfig) chirpsQuery(res http.ResponseWriter, req *http.Request){
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	var chirps []database.Chirp
+
+	//cerca il chirp
+	chirps, err  := cfg.queries.QueryChirp(req.Context(), req.PathValue("chirpID"))
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+	}
+	if len(chirps) == 0 {
+		res.WriteHeader(404)
+		return
+	}
+	log.Printf("chirps trovati::: %v", chirps)
+		outputChirp := Chirp{
+			ID : chirps[0].ID,
+			CreatedAt : chirps[0].CreatedAt,
+			UpdatedAt : chirps[0].UpdatedAt,
+			Body : chirps[0].Body,
+			User_id : chirps[0].UserID,
+	}
+
+
+	data, err := json.Marshal(outputChirp)
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(200)
 	res.Write(data)
