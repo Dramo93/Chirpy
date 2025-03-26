@@ -14,6 +14,7 @@ import (
 	"Chirpy/internal/database"
 	"github.com/google/uuid"
 	"time"
+	"Chirpy/internal/auth"
 )
 
 type apiConfig struct {
@@ -81,6 +82,7 @@ func main (){
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.chirpsQuery)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsCreator)
 	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
+	mux.HandleFunc("POST /api/login", apiCfg.userLogin)
 
 	
 	
@@ -176,24 +178,25 @@ func(cfg *apiConfig) chirpsQuery(res http.ResponseWriter, req *http.Request){
 		Error string `json:"error"`
 	}
 
-	var chirps []database.Chirp
+	chirpIDString := req.PathValue("chirpID")
+	chirpID, _ := uuid.Parse(chirpIDString)
 
 	//cerca il chirp
-	chirps, err  := cfg.queries.QueryChirp(req.Context(), req.PathValue("chirpID"))
+	chirp, err  := cfg.queries.QueryChirp(req.Context(), chirpID)
 	if err != nil {
 		log.Printf("errore in creazione::: %v", err)
 	}
-	if len(chirps) == 0 {
+	if chirp.Body == "" {
 		res.WriteHeader(404)
 		return
 	}
-	log.Printf("chirps trovati::: %v", chirps)
+	log.Printf("chirp trovato::: %v", chirp)
 		outputChirp := Chirp{
-			ID : chirps[0].ID,
-			CreatedAt : chirps[0].CreatedAt,
-			UpdatedAt : chirps[0].UpdatedAt,
-			Body : chirps[0].Body,
-			User_id : chirps[0].UserID,
+			ID : chirp.ID,
+			CreatedAt : chirp.CreatedAt,
+			UpdatedAt : chirp.UpdatedAt,
+			Body : chirp.Body,
+			User_id : chirp.UserID,
 	}
 
 
@@ -292,6 +295,7 @@ func (cfg *apiConfig) chirpsCreator (res http.ResponseWriter, req *http.Request)
 
 func (cfg *apiConfig) userCreator (res http.ResponseWriter, req *http.Request){
 	type parameters struct {
+		Password string `json:"password"`
 		Email string `json:"email"`
 	}
 
@@ -323,8 +327,14 @@ func (cfg *apiConfig) userCreator (res http.ResponseWriter, req *http.Request){
 	}
 
 	var user database.User
+	
 	//crea l'utenza
-	user, err = cfg.queries.CreateUser(req.Context(), params.Email)
+	hashed, _ := auth.HashPassword(params.Password)
+	userParam := database.CreateUserParams{
+		Email : params.Email,
+		HashedPassword : hashed,
+	}
+	user, err = cfg.queries.CreateUser(req.Context(), userParam)
 	if err != nil {
 		log.Printf("errore in creazione::: %v", err)
 	}
@@ -340,5 +350,70 @@ func (cfg *apiConfig) userCreator (res http.ResponseWriter, req *http.Request){
 	data, err := json.Marshal(outputUser)
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(201)
+	res.Write(data)
+}
+
+func (cfg *apiConfig) userLogin (res http.ResponseWriter, req *http.Request){
+	type parameters struct {
+		Password string `json:"password"`
+		Email string `json:"email"`
+	}
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+
+	//gestione errore
+	if err != nil {
+		responseBody := returnError{
+			Error : "errore",
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(500)
+		res.Write(data)
+		return
+	}
+
+	var user database.User
+
+
+	user, err  = cfg.queries.QueryUser(req.Context(), params.Email)
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+		return
+	}
+	if user.Email == "" {
+		res.WriteHeader(401)
+		log.Printf("incorrect email or password")
+		return
+	}
+
+	err = auth.CheckPasswordHash(user.HashedPassword, params.Password)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("incorrect email or password")
+		return
+	}
+	log.Printf("user trovato::: %v", user)
+	outputUser := User{
+		ID : user.ID,
+		CreatedAt : user.CreatedAt,
+		UpdatedAt : user.UpdatedAt,
+		Email : user.Email,
+	}
+
+	data, err := json.Marshal(outputUser)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
 	res.Write(data)
 }
