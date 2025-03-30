@@ -20,6 +20,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries  *database.Queries
+	secretToken string
 	
 }
 
@@ -28,6 +29,8 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token	  string 	`json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -42,6 +45,7 @@ func main (){
 
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	secretTokenConfig := os.Getenv("SECRETTOKEN")
 
 	db, erru := sql.Open("postgres", dbURL)
 	if erru != nil {
@@ -70,6 +74,7 @@ func main (){
 
 	apiCfg := apiConfig{
 		queries : dbQueries,
+		secretToken : secretTokenConfig,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app",fileserver)))
@@ -82,7 +87,10 @@ func main (){
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.chirpsQuery)
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsCreator)
 	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
+	mux.HandleFunc("PUT /api/users", apiCfg.modifyUser)
 	mux.HandleFunc("POST /api/login", apiCfg.userLogin)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshToken)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeToken)
 
 	
 	
@@ -153,7 +161,6 @@ func(cfg *apiConfig) chirpsQueryAll(res http.ResponseWriter, req *http.Request){
 	if err != nil {
 		log.Printf("errore in creazione::: %v", err)
 	}
-	log.Printf("chirps trovati::: %v", chirps)
 	for _, c := range chirps {
 		outputChirp := Chirp{
 			ID : c.ID,
@@ -218,10 +225,22 @@ func (cfg *apiConfig) chirpsCreator (res http.ResponseWriter, req *http.Request)
 	type returnError struct{
 		Error string `json:"error"`
 	}
+	reqBearer, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		log.Printf("errore nel GetBearerToken")
+		res.WriteHeader(500)
+		return
+	}
+	userFound, err := auth.ValidateJWT(reqBearer, cfg.secretToken)
+	if err != nil {
+		log.Printf("unauthorized with this token:: %v, this error present %v", reqBearer, err)
+		res.WriteHeader(401)
+		return
+	}
 
 	decoder := json.NewDecoder(req.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		err := "Something went wrong"
 
@@ -268,7 +287,7 @@ func (cfg *apiConfig) chirpsCreator (res http.ResponseWriter, req *http.Request)
 
 	clearedParameters := database.CreateChirpParams{
 		Body : clearingString,
-		UserID : params.User_id,
+		UserID : userFound,
 	}
 	var chirp database.Chirp
 	//crea il chirp
@@ -283,7 +302,7 @@ func (cfg *apiConfig) chirpsCreator (res http.ResponseWriter, req *http.Request)
 		CreatedAt : chirp.CreatedAt,
 		UpdatedAt : chirp.UpdatedAt,
 		Body : chirp.Body,
-		User_id : chirp.UserID,
+		User_id : userFound,
 	}
 
 	data, err := json.Marshal(outputChirp)
@@ -357,6 +376,7 @@ func (cfg *apiConfig) userLogin (res http.ResponseWriter, req *http.Request){
 	type parameters struct {
 		Password string `json:"password"`
 		Email string `json:"email"`
+		//ExpSec int `json:"expires_in_seconds"`
 	}
 
 	type returnError struct{
@@ -389,7 +409,7 @@ func (cfg *apiConfig) userLogin (res http.ResponseWriter, req *http.Request){
 
 	user, err  = cfg.queries.QueryUser(req.Context(), params.Email)
 	if err != nil {
-		log.Printf("errore in creazione::: %v", err)
+		log.Printf("errore in query::: %v", err)
 		return
 	}
 	if user.Email == "" {
@@ -404,7 +424,165 @@ func (cfg *apiConfig) userLogin (res http.ResponseWriter, req *http.Request){
 		log.Printf("incorrect email or password")
 		return
 	}
-	log.Printf("user trovato::: %v", user)
+	outputUser := User{
+		ID : user.ID,
+		CreatedAt : user.CreatedAt,
+		UpdatedAt : user.UpdatedAt,
+		Email : user.Email,
+	}
+
+	expiration := 3600
+	//generate Access Token
+	userToken, err := auth.MakeJWT(user.ID, cfg.secretToken, time.Duration(expiration)* time.Second)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("problem  with token:: %v", err)
+		return
+	}
+	outputUser.Token = userToken
+
+	//generate Refresh Token
+	refreshToken, err := auth.MakeRefreshToken()
+	outputUser.RefreshToken = refreshToken
+
+	tm := time.Now()
+	tm = tm.AddDate(0, 0, 60) 
+	refTokenPar := database.CreateRefreshTokenParams{
+		Token : refreshToken,
+		UserID : user.ID,
+		ExpiresAt : tm,
+	}
+	refreshTokenCreated, err := cfg.queries.CreateRefreshToken(req.Context(), refTokenPar)
+	log.Printf("creatoRefreshToken:: %v", refreshTokenCreated)
+	log.Printf("tempo di expire:: %v", tm)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("problem  with refreshToken:: %v", err)
+		return
+	}
+
+
+	data, err := json.Marshal(outputUser)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
+	res.Write(data)
+}
+
+func (cfg *apiConfig) refreshToken (res http.ResponseWriter, req *http.Request){
+
+	type returnToken struct{
+		Token string `json:"token"`
+	}
+	reftoken, err := auth.GetBearerToken(req.Header)
+	foundToken, err := cfg.queries.QueryRefreshToken(req.Context(), reftoken)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("refresh token not found:: %v", err)
+		return 
+	}
+	// Verifica se il token è stato revocato
+	if foundToken.RevokedAt.Valid {
+		res.WriteHeader(401)
+		log.Printf("token revoked at:: %v", foundToken.RevokedAt.Time)
+		return 
+	}
+
+	// Verifica separata per la scadenza
+	if foundToken.ExpiresAt.Before(time.Now()) {
+		res.WriteHeader(401)
+		log.Printf("token expired:: %v", foundToken.ExpiresAt)
+		return 
+	}
+
+	
+	expiration := 3600
+	//generate Access Token
+	userToken, err := auth.MakeJWT(foundToken.UserID, cfg.secretToken, time.Duration(expiration)* time.Second)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("problem  with new access token:: %v", err)
+		return 
+	}
+	outputToken := returnToken{
+		Token :  userToken,
+	}
+	data, err := json.Marshal(outputToken)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(200)
+	res.Write(data)
+
+}
+
+func (cfg *apiConfig) revokeToken (res http.ResponseWriter, req *http.Request){
+	reftoken, _ := auth.GetBearerToken(req.Header)
+
+	revoked, err := cfg.queries.RevokeToken(req.Context(), reftoken)
+	log.Printf("revoked token::: %v ::: token completed", revoked)
+	if err != nil {
+		res.WriteHeader(401)
+		log.Printf("problem  with token:: %v", err)
+		return 
+	}
+	res.WriteHeader(204)
+	return
+
+}
+
+func (cfg *apiConfig) modifyUser (res http.ResponseWriter, req *http.Request){
+	type parameters struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+	reqBearer, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		log.Printf("errore nel GetBearerToken")
+		res.WriteHeader(401)
+		return
+	}
+	userFound, err := auth.ValidateJWT(reqBearer, cfg.secretToken)
+	if err != nil {
+		log.Printf("unauthorized with this token:: %v, this error present %v", reqBearer, err)
+		res.WriteHeader(401)
+		return
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	params := parameters{}
+	err = decoder.Decode(&params)
+	if err != nil {
+		err := "Something went wrong"
+
+		responseBody := returnError{
+			Error : err,
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(500)
+		res.Write(data)
+		return
+	}
+
+	hashed, _ := auth.HashPassword(params.Password)
+	userParam := database.UpdateUserParams{
+		ID : userFound,
+		Email : params.Email,
+		HashedPassword : hashed,
+	}
+	user, err := cfg.queries.UpdateUser(req.Context(), userParam)
+	if err != nil {
+		log.Printf("errore in creazione::: %v", err)
+	}
+	log.Printf("email ricevuta::: %v", params.Email)
+	log.Printf("utenza creata::: %v", user)
 	outputUser := User{
 		ID : user.ID,
 		CreatedAt : user.CreatedAt,

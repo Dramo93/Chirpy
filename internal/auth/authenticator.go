@@ -6,6 +6,11 @@ import "github.com/google/uuid"
 import "time"
 import "github.com/golang-jwt/jwt/v5"
 import "fmt"
+import "net/http"
+import "strings"
+import "log"
+import "crypto/rand"
+import "encoding/hex"
 
 type auth struct {}
 
@@ -58,7 +63,10 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error){
 	})
 
 	if err != nil {
-		return uuid.Nil, errors.New("error during parsing")
+		log.Printf("auth----ValidateJMT-----")
+		log.Printf("abbiamo un errore con il parsing del token:: %v", tokenString)
+		log.Printf("token che fa problemi:: %v", token)
+		return uuid.Nil, errors.New("error during parsing, err::: %v")
 	} else if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok {
 		fmt.Println(claims.Issuer)
 		if token.Valid {
@@ -72,4 +80,20 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error){
 		return uuid.Nil, errors.New("unknown claims type, cannot proceed")
 	}
 
+}
+
+func GetBearerToken(headers http.Header) (string, error){
+	authoHeader := headers.Get("Authorization")
+
+	bearer := strings.Replace(authoHeader,"Bearer " , "", -1)
+	return bearer, nil
+
+}
+
+func MakeRefreshToken() (string, error){
+		// Note that no error handling is necessary, as Read always succeeds.
+		key := make([]byte, 32)
+		_, err := rand.Read(key)
+		encodedToken := hex.EncodeToString(key)
+		return encodedToken, err
 }
