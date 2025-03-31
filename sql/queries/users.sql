@@ -35,8 +35,17 @@ RETURNING *;
 SELECT * FROM chirps
 ORDER BY created_at ASC;
 
+-- name: QueryAllAuthorChirps :many
+SELECT * FROM chirps
+WHERE user_id = $1
+ORDER BY created_at ASC;
+
 -- name: QueryChirp :one
 SELECT * FROM chirps
+WHERE id = $1;
+
+-- name: DeleteChirp :exec
+DELETE FROM chirps
 WHERE id = $1;
 
 -- name: QueryRefreshToken :one
@@ -57,6 +66,12 @@ WHERE email = $1;
 -- name: UpdateUser :one
 UPDATE users
 SET hashed_password = $2, email = $3, updated_at = NOW()
+WHERE id = $1
+RETURNING *;
+
+-- name: UserPro :one
+UPDATE users
+SET is_chirpy_red = TRUE
 WHERE id = $1
 RETURNING *;
 

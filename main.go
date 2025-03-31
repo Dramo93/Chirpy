@@ -15,12 +15,14 @@ import (
 	"github.com/google/uuid"
 	"time"
 	"Chirpy/internal/auth"
+	"sort"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	queries  *database.Queries
 	secretToken string
+	apiKey string
 	
 }
 
@@ -31,6 +33,7 @@ type User struct {
 	Email     string    `json:"email"`
 	Token	  string 	`json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	Is_chirpy_red bool  `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -46,6 +49,7 @@ func main (){
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	secretTokenConfig := os.Getenv("SECRETTOKEN")
+	apik := os.Getenv("POLKA_KEY")
 
 	db, erru := sql.Open("postgres", dbURL)
 	if erru != nil {
@@ -75,6 +79,7 @@ func main (){
 	apiCfg := apiConfig{
 		queries : dbQueries,
 		secretToken : secretTokenConfig,
+		apiKey : apik,
 	}
 
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app",fileserver)))
@@ -85,12 +90,16 @@ func main (){
 	})
 	mux.HandleFunc("GET /api/chirps", apiCfg.chirpsQueryAll)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.chirpsQuery)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.chirpsDelete)
+	
 	mux.HandleFunc("POST /api/chirps", apiCfg.chirpsCreator)
 	mux.HandleFunc("POST /api/users", apiCfg.userCreator)
 	mux.HandleFunc("PUT /api/users", apiCfg.modifyUser)
 	mux.HandleFunc("POST /api/login", apiCfg.userLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.refreshToken)
 	mux.HandleFunc("POST /api/revoke", apiCfg.revokeToken)
+
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeUser)
 
 	
 	
@@ -156,10 +165,17 @@ func(cfg *apiConfig) chirpsQueryAll(res http.ResponseWriter, req *http.Request){
 
 	var chirps []database.Chirp
 	var outChirps []Chirp
-	//crea il chirp
-	chirps, err  := cfg.queries.QueryAllChirps(req.Context())
-	if err != nil {
-		log.Printf("errore in creazione::: %v", err)
+
+	author := req.URL.Query().Get("author_id")
+	sorting := req.URL.Query().Get("sort")
+	if author == "" {
+		//crea il chirp
+		chirps, _ = cfg.queries.QueryAllChirps(req.Context())
+
+	} else {
+		authorId, _ := uuid.Parse(author)
+		chirps, _ = cfg.queries.QueryAllAuthorChirps(req.Context(), authorId)
+	
 	}
 	for _, c := range chirps {
 		outputChirp := Chirp{
@@ -171,14 +187,21 @@ func(cfg *apiConfig) chirpsQueryAll(res http.ResponseWriter, req *http.Request){
 		}
 		outChirps = append(outChirps, outputChirp)
 	}
+	if sorting == "asc"{
+		sort.Slice(outChirps, func(i, j int) bool { return outChirps[i].CreatedAt.Before(outChirps[j].CreatedAt) })
+	}
+	if sorting == "desc" {
+		sort.Slice(outChirps, func(i, j int) bool { return outChirps[i].CreatedAt.After(outChirps[j].CreatedAt) })
+	}
 
 
-	data, err := json.Marshal(outChirps)
+	data, _ := json.Marshal(outChirps)
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(200)
 	res.Write(data)
 
 }
+
 func(cfg *apiConfig) chirpsQuery(res http.ResponseWriter, req *http.Request){
 
 	type returnError struct{
@@ -211,6 +234,56 @@ func(cfg *apiConfig) chirpsQuery(res http.ResponseWriter, req *http.Request){
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(200)
 	res.Write(data)
+
+}
+
+func(cfg *apiConfig) chirpsDelete(res http.ResponseWriter, req *http.Request){
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	reqBearer, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		log.Printf("errore nel GetBearerToken")
+		res.WriteHeader(500)
+		return
+	}
+	userFound, err := auth.ValidateJWT(reqBearer, cfg.secretToken)
+	if err != nil {
+		log.Printf("unauthorized with this token:: %v, this error present %v", reqBearer, err)
+		res.WriteHeader(401)
+		return
+	}
+
+
+	chirpIDString := req.PathValue("chirpID")
+	chirpID, _ := uuid.Parse(chirpIDString)
+
+	//cerca il chirp
+	chirp, err  := cfg.queries.QueryChirp(req.Context(), chirpID)
+	if err != nil {
+		log.Printf("chirp da cancellare non trovato::: %v", err)
+	}
+	if chirp.Body == "" {
+		res.WriteHeader(404)
+		return
+	}
+
+	if chirp.UserID != userFound {
+		res.WriteHeader(403)
+		return
+	}
+
+	err = cfg.queries.DeleteChirp(req.Context(), chirpID)
+	if err != nil {
+		log.Printf("errore in cancellazione::: %v", err)
+		res.WriteHeader(404)
+	}
+
+
+	res.WriteHeader(204)
+
 
 }
 
@@ -364,6 +437,7 @@ func (cfg *apiConfig) userCreator (res http.ResponseWriter, req *http.Request){
 		CreatedAt : user.CreatedAt,
 		UpdatedAt : user.UpdatedAt,
 		Email : user.Email,
+		Is_chirpy_red : user.IsChirpyRed,
 	}
 
 	data, err := json.Marshal(outputUser)
@@ -429,6 +503,7 @@ func (cfg *apiConfig) userLogin (res http.ResponseWriter, req *http.Request){
 		CreatedAt : user.CreatedAt,
 		UpdatedAt : user.UpdatedAt,
 		Email : user.Email,
+		Is_chirpy_red : user.IsChirpyRed,
 	}
 
 	expiration := 3600
@@ -595,3 +670,68 @@ func (cfg *apiConfig) modifyUser (res http.ResponseWriter, req *http.Request){
 	res.WriteHeader(200)
 	res.Write(data)
 }
+
+func (cfg *apiConfig) upgradeUser (res http.ResponseWriter, req *http.Request){
+	type dataParam struct {
+		User_id string `json:"user_id"`
+	}
+
+	type webhookParams struct {
+		Event string `json:"event"`
+		Data dataParam `json:"data"`
+	}
+
+	type returnError struct{
+		Error string `json:"error"`
+	}
+
+	apiKeyFound, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		log.Printf("errore riscontrato nel prendere la api key::: %v", err)
+		res.WriteHeader(401)
+		return
+	}
+
+	if apiKeyFound != cfg.apiKey {
+		log.Printf("unauthorized with this apikey:: %v", apiKeyFound)
+		res.WriteHeader(401)
+		return
+	}
+
+	decoder := json.NewDecoder(req.Body)
+	whParams := webhookParams{}
+	err = decoder.Decode(&whParams)
+
+	//gestione errore
+	if err != nil {
+		err := "Something went wrong"
+
+		responseBody := returnError{
+			Error : err,
+		}
+		data, e := json.Marshal(responseBody)
+		if e != nil {
+			log.Printf("errore nel marshaling")
+			res.WriteHeader(500)
+			return
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(500)
+		res.Write(data)
+		return
+	}
+
+	if whParams.Event != "user.upgraded" {
+		res.WriteHeader(204)
+		return
+	}
+	user, _ := uuid.Parse(whParams.Data.User_id)
+	_, err = cfg.queries.UserPro(req.Context(), user)
+	if err != nil {
+		log.Printf("errore riscontrato::: %v", err)
+		res.WriteHeader(404)
+	}
+	res.WriteHeader(204)
+	return
+}
+

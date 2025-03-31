@@ -90,6 +90,13 @@ func GetBearerToken(headers http.Header) (string, error){
 
 }
 
+func GetAPIKey(headers http.Header) (string, error){
+	authoHeader := headers.Get("Authorization")
+
+	apikey := strings.Replace(authoHeader,"ApiKey " , "", -1)
+	return apikey, nil
+}
+
 func MakeRefreshToken() (string, error){
 		// Note that no error handling is necessary, as Read always succeeds.
 		key := make([]byte, 32)
@@ -97,3 +104,4 @@ func MakeRefreshToken() (string, error){
 		encodedToken := hex.EncodeToString(key)
 		return encodedToken, err
 }
+
